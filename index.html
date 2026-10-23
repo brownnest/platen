@@ -197,10 +197,64 @@
       }
 
       #cursorAnchor {
+        position: relative;
         display: inline-block;
         width: 2px;
         height: 20px;
         vertical-align: text-bottom;
+      }
+
+      #cursorAnchor::before {
+        content: "";
+        position: absolute;
+        top: -2px;
+        left: -7px;
+        width: 4px;
+        height: 25px;
+        border-radius: 3px 3px 1px 1px;
+        background: linear-gradient(90deg, #5b351f, #a46a35 55%, #3a2116);
+        box-shadow: 0 1px 1px rgba(41, 24, 14, 0.45);
+        transform: rotate(34deg);
+        transform-origin: 50% 100%;
+        z-index: 1;
+      }
+
+      #cursorAnchor::after {
+        content: "";
+        position: absolute;
+        top: 15px;
+        left: -8px;
+        width: 7px;
+        height: 10px;
+        border-radius: 1px 1px 5px 5px;
+        background: linear-gradient(90deg, #19130f, #554031 55%, #16100d);
+        transform: rotate(34deg);
+        transform-origin: 50% 0;
+        z-index: 2;
+      }
+
+      #cursorAnchor.brush-stroke::before,
+      #cursorAnchor.brush-stroke::after {
+        animation: brushStroke 360ms cubic-bezier(0.22, 1, 0.36, 1);
+      }
+
+      @keyframes brushStroke {
+        0% {
+          transform: rotate(34deg) translate(0, 0);
+        }
+        45% {
+          transform: rotate(8deg) translate(3px, 2px);
+        }
+        100% {
+          transform: rotate(34deg) translate(0, 0);
+        }
+      }
+
+      @media (prefers-reduced-motion: reduce) {
+        #cursorAnchor.brush-stroke::before,
+        #cursorAnchor.brush-stroke::after {
+          animation: none;
+        }
       }
 
       /* 나이트 램프 어둠 & 콘 라이트 오버레이 */
@@ -268,6 +322,15 @@
       }
       .demo-badge:hover {
         background: rgba(212, 162, 89, 0.32);
+      }
+
+      .music-toggle {
+        font: inherit;
+      }
+
+      .music-toggle:disabled {
+        cursor: not-allowed;
+        opacity: 0.45;
       }
 
       .char-counter {
@@ -683,6 +746,9 @@
           </div>
           <div class="hud-right">
             <span class="demo-badge" id="demoToggleBtn">자동 타이핑 중 ⏸</span>
+            <button class="demo-badge music-toggle" id="musicToggleBtn" type="button">
+              배경음악 ▶
+            </button>
             <div class="char-counter">
               <span id="charCount">151</span> / 3,000 · <span id="lineCount">14</span>줄
             </div>
@@ -930,7 +996,97 @@
         }
       }
 
+      class AmbientMusic {
+        constructor() {
+          this.ctx = null;
+          this.master = null;
+          this.timer = null;
+          this.noteIndex = 0;
+          this.playing = false;
+          this.pattern = [261.63, 329.63, 392.0, 523.25, 392.0, 329.63];
+        }
+
+        getAudioContext() {
+          return window.AudioContext || window.webkitAudioContext;
+        }
+
+        isSupported() {
+          return Boolean(this.getAudioContext());
+        }
+
+        ensureContext() {
+          if (!this.isSupported()) return false;
+          if (!this.ctx) {
+            const AudioCtx = this.getAudioContext();
+            this.ctx = new AudioCtx();
+            this.master = this.ctx.createGain();
+            this.master.gain.value = 0;
+            this.master.connect(this.ctx.destination);
+          }
+          return true;
+        }
+
+        scheduleNote() {
+          if (!this.playing || !this.ctx || !this.master) return;
+
+          const now = this.ctx.currentTime;
+          const oscillator = this.ctx.createOscillator();
+          const gain = this.ctx.createGain();
+          const frequency = this.pattern[this.noteIndex];
+          this.noteIndex = (this.noteIndex + 1) % this.pattern.length;
+
+          oscillator.type = "triangle";
+          oscillator.frequency.setValueAtTime(frequency, now);
+          gain.gain.setValueAtTime(0.0001, now);
+          gain.gain.exponentialRampToValueAtTime(1, now + 0.02);
+          gain.gain.exponentialRampToValueAtTime(0.0001, now + 0.47);
+
+          oscillator.connect(gain);
+          gain.connect(this.master);
+          oscillator.start(now);
+          oscillator.stop(now + 0.5);
+          this.timer = window.setTimeout(() => this.scheduleNote(), 520);
+        }
+
+        start() {
+          try {
+            if (!this.ensureContext()) return false;
+            if (this.ctx.state === "suspended") this.ctx.resume();
+            if (this.playing) return true;
+
+            this.playing = true;
+            this.master.gain.cancelScheduledValues(this.ctx.currentTime);
+            this.master.gain.setTargetAtTime(0.035, this.ctx.currentTime, 0.04);
+            this.scheduleNote();
+            return true;
+          } catch (error) {
+            this.stop();
+            return false;
+          }
+        }
+
+        stop() {
+          this.playing = false;
+          if (this.timer) {
+            window.clearTimeout(this.timer);
+            this.timer = null;
+          }
+          if (this.ctx && this.master) {
+            try {
+              this.master.gain.cancelScheduledValues(this.ctx.currentTime);
+              this.master.gain.setTargetAtTime(0.0001, this.ctx.currentTime, 0.04);
+            } catch (error) {}
+          }
+          return false;
+        }
+
+        toggle() {
+          return this.playing ? this.stop() : this.start();
+        }
+      }
+
       const sound = new TypewriterAudio();
+      const music = new AmbientMusic();
 
       /* =========================================================================
    2. 한글 두벌식 자모 조합 오토마타
@@ -1315,11 +1471,18 @@
       const typeGuide = document.getElementById("typeGuide");
       const typeImpactLayer = document.getElementById("typeImpactLayer");
       const impactToggle = document.getElementById("impactToggle");
+      const musicToggleBtn = document.getElementById("musicToggleBtn");
       const charCountEl = document.getElementById("charCount");
       const lineCountEl = document.getElementById("lineCount");
       const reducedMotionQuery = window.matchMedia(
         "(prefers-reduced-motion: reduce)",
       );
+
+      function triggerBrushStroke() {
+        cursorAnchor.classList.remove("brush-stroke");
+        void cursorAnchor.offsetWidth;
+        cursorAnchor.classList.add("brush-stroke");
+      }
 
       // T자 활자 타격 애니메이션
       function triggerStrike() {
@@ -1455,6 +1618,7 @@
           sound.playKeyClick(true);
           triggerStrike();
           committedStr += automata.flush() + " ";
+          triggerBrushStroke();
           updateScreen();
           return;
         }
@@ -1463,6 +1627,7 @@
           sound.playReturnBell();
           triggerStrike();
           committedStr += automata.flush() + "\n";
+          triggerBrushStroke();
           updateScreen();
           return;
         }
@@ -1474,6 +1639,7 @@
         if (res.committed) {
           committedStr += res.committed;
         }
+        triggerBrushStroke();
         updateScreen();
         triggerTypeImpact();
       }
@@ -1615,7 +1781,12 @@
 
       window.addEventListener("keydown", (e) => {
         // 글꼴 메뉴의 방향키·Enter·문자 탐색은 종이에 입력하지 않는다.
-        if (e.target === fontSelect || e.target === impactToggle) return;
+        if (
+          e.target === fontSelect ||
+          e.target === impactToggle ||
+          e.target === musicToggleBtn
+        )
+          return;
         if (e.metaKey || e.ctrlKey || e.altKey) return;
 
         // Shift·CapsLock·한/영 키 단독 입력은 무시. IME 가 'Process' 로 보내도 e.code 는 살아 있으므로 아래에서 처리한다
@@ -1717,6 +1888,20 @@
         }
         desk.focus();
       });
+
+      if (!music.isSupported()) {
+        musicToggleBtn.disabled = true;
+        musicToggleBtn.textContent = "배경음악 미지원";
+      } else {
+        musicToggleBtn.addEventListener("click", (e) => {
+          e.stopPropagation();
+          const isPlaying = music.toggle();
+          musicToggleBtn.textContent = isPlaying
+            ? "배경음악 ⏸"
+            : "배경음악 ▶";
+          desk.focus();
+        });
+      }
 
       document.getElementById("clearBtn").addEventListener("click", () => {
         sound.init();
